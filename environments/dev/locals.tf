@@ -433,17 +433,6 @@ locals {
 
   }
 
-  firewall = {
-
-    name = "pip-firewall-dev"
-
-    allocation_method = "Static"
-
-    sku = "Standard"
-
-    zones = ["1", "2", "3"]
-
-  }
   private_dns_zones = {
 
     keyvault = {
