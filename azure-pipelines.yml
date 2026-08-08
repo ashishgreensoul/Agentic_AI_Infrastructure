@@ -159,8 +159,131 @@ stages:
         python -m pip install --upgrade pip
         python -m pip install checkov
 
+        New-Item -ItemType Directory -Force -Path "$(Build.ArtifactStagingDirectory)\security" | Out-Null
+
         Write-Host "Running Checkov..."
 
-        checkov -d "$(workingDirectory)"
+        checkov `
+          -d "$(workingDirectory)" `
+          --framework terraform `
+          -o json `
+          --output-file-path "$(Build.ArtifactStagingDirectory)\security\checkov.json"
 
       displayName: 'Run Checkov'
+      continueOnError: true
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Checkov Report'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\security'
+        ArtifactName: 'security-report'
+        publishLocation: 'Container'
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+
+        Write-Host "Installing Checkov..."
+
+        python -m pip install --upgrade pip
+        python -m pip install checkov
+
+        New-Item -ItemType Directory -Force -Path "$(Build.ArtifactStagingDirectory)\security" | Out-Null
+
+        Write-Host "Running Checkov..."
+
+        checkov `
+          -d "$(workingDirectory)" `
+          --framework terraform `
+          -o json `
+          --output-file-path "$(Build.ArtifactStagingDirectory)\security\checkov.json"
+
+      displayName: 'Run Checkov'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Checkov Report'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\security'
+        ArtifactName: 'security-report'
+        publishLocation: 'Container'
+
+# ============================================================
+# Terraform Plan
+# ============================================================
+
+- stage: Terraform_Plan
+  displayName: 'Terraform Plan'
+
+  dependsOn:
+  - Terraform_CI
+  - Security_Scan
+
+  condition: |
+    and(
+      succeeded(),
+      in(
+        dependencies.Security_Scan.result,
+        'Succeeded',
+        'SucceededWithIssues'
+      )
+    )
+
+  jobs:
+
+  - job: Plan
+    displayName: 'Terraform Plan'
+
+    steps:
+
+    - checkout: self
+
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: $(terraformVersion)
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+
+        Set-Location "$(workingDirectory)"
+
+        Write-Host "Initializing Terraform..."
+
+        terraform init
+
+      displayName: 'Terraform Init'
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+
+        Set-Location "$(workingDirectory)"
+
+        New-Item -ItemType Directory -Force `
+          -Path "$(Build.ArtifactStagingDirectory)\terraform" | Out-Null
+
+        Write-Host "Creating Terraform Plan..."
+
+        terraform plan `
+          -out="$(Build.ArtifactStagingDirectory)\terraform\tfplan"
+
+      displayName: 'Terraform Plan'
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+
+        Set-Location "$(workingDirectory)"
+
+        terraform show `
+          -no-color `
+          "$(Build.ArtifactStagingDirectory)\terraform\tfplan" `
+          > "$(Build.ArtifactStagingDirectory)\terraform\terraform-plan.txt"
+
+        Write-Host "Terraform plan exported."
+
+      displayName: 'Export Terraform Plan'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Terraform Plan'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\terraform'
+        ArtifactName: 'terraform-plan'
+        publishLocation: 'Container'
