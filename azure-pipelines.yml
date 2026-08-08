@@ -47,3 +47,31 @@ stages:
         cd $(workingDirectory)
         terraform validate
       displayName: 'Terraform Validate'
+
+- stage: Security_Scan
+  displayName: 'Terraform Security Scan'
+  dependsOn: Terraform_CI
+  condition: succeeded()
+
+  jobs:
+  - job: Security
+    displayName: 'Terraform Security'
+
+    steps:
+
+    - checkout: self
+
+    - script: |
+        curl -sSfL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+      displayName: 'Install TFLint'
+
+    - script: |
+        cd $(workingDirectory)
+        tflint --init
+        tflint
+      displayName: 'Run TFLint'
+
+    - script: |
+        pip install checkov
+        checkov -d $(workingDirectory)
+      displayName: 'Run Checkov'
