@@ -656,11 +656,6 @@ locals {
     }
 
   }
-  protected_vms = {
-
-    linux = {}
-
-  }
 
   bastions = {
 
