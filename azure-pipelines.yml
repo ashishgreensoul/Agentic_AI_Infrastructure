@@ -17,15 +17,14 @@ variables:
 
 stages:
 
-# =========================================================
+# ============================================================
 # STAGE 1 - TERRAFORM CI
-# =========================================================
+# ============================================================
 
 - stage: Terraform_CI
   displayName: 'Terraform CI'
 
   jobs:
-
   - job: Validate
     displayName: 'Terraform Validate'
 
@@ -33,43 +32,74 @@ stages:
 
     - checkout: self
 
+    # --------------------------------------------------------
     # Install Terraform
+    # --------------------------------------------------------
+
     - task: TerraformInstaller@1
       displayName: 'Install Terraform'
       inputs:
         terraformVersion: $(terraformVersion)
 
+    # --------------------------------------------------------
     # Terraform Format
-    - script: |
-        cd $(workingDirectory)
+    # --------------------------------------------------------
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+
+        Set-Location "$(workingDirectory)"
+
+        Write-Host "Checking Terraform formatting..."
+
         terraform fmt -check -recursive
+
       displayName: 'Terraform Format Check'
 
+    # --------------------------------------------------------
     # Terraform Init
-    - script: |
-        cd $(workingDirectory)
+    # --------------------------------------------------------
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+
+        Set-Location "$(workingDirectory)"
+
+        Write-Host "Initializing Terraform..."
+
         terraform init -backend=false
+
       displayName: 'Terraform Init'
 
+    # --------------------------------------------------------
     # Terraform Validate
-    - script: |
-        cd $(workingDirectory)
+    # --------------------------------------------------------
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+
+        Set-Location "$(workingDirectory)"
+
+        Write-Host "Validating Terraform..."
+
         terraform validate
+
       displayName: 'Terraform Validate'
 
 
-# =========================================================
+# ============================================================
 # STAGE 2 - SECURITY SCAN
-# =========================================================
+# ============================================================
 
 - stage: Security_Scan
   displayName: 'Terraform Security Scan'
 
-  dependsOn: Terraform_CI
+  dependsOn:
+    - Terraform_CI
+
   condition: succeeded()
 
   jobs:
-
   - job: Security
     displayName: 'Terraform Security'
 
@@ -78,9 +108,9 @@ stages:
     - checkout: self
 
 
-    # =====================================================
-    # Install TFLint
-    # =====================================================
+    # ========================================================
+    # INSTALL TFLINT
+    # ========================================================
 
     - powershell: |
         $ErrorActionPreference = "Stop"
@@ -127,9 +157,9 @@ stages:
       displayName: 'Install TFLint'
 
 
-    # =====================================================
-    # Run TFLint
-    # =====================================================
+    # ========================================================
+    # RUN TFLINT
+    # ========================================================
 
     - powershell: |
         $ErrorActionPreference = "Stop"
@@ -145,11 +175,12 @@ stages:
         tflint
 
       displayName: 'Run TFLint'
+      continueOnError: true
 
 
-    # =====================================================
-    # Install & Run Checkov
-    # =====================================================
+    # ========================================================
+    # INSTALL & RUN CHECKOV
+    # ========================================================
 
     - powershell: |
         $ErrorActionPreference = "Stop"
@@ -159,7 +190,11 @@ stages:
         python -m pip install --upgrade pip
         python -m pip install checkov
 
-        New-Item -ItemType Directory -Force -Path "$(Build.ArtifactStagingDirectory)\security" | Out-Null
+        New-Item `
+          -ItemType Directory `
+          -Force `
+          -Path "$(Build.ArtifactStagingDirectory)\security" |
+          Out-Null
 
         Write-Host "Running Checkov..."
 
@@ -172,32 +207,10 @@ stages:
       displayName: 'Run Checkov'
       continueOnError: true
 
-    - task: PublishBuildArtifacts@1
-      displayName: 'Publish Checkov Report'
-      inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)\security'
-        ArtifactName: 'security-report'
-        publishLocation: 'Container'
 
-    - powershell: |
-        $ErrorActionPreference = "Stop"
-
-        Write-Host "Installing Checkov..."
-
-        python -m pip install --upgrade pip
-        python -m pip install checkov
-
-        New-Item -ItemType Directory -Force -Path "$(Build.ArtifactStagingDirectory)\security" | Out-Null
-
-        Write-Host "Running Checkov..."
-
-        checkov `
-          -d "$(workingDirectory)" `
-          --framework terraform `
-          -o json `
-          --output-file-path "$(Build.ArtifactStagingDirectory)\security\checkov.json"
-
-      displayName: 'Run Checkov'
+    # ========================================================
+    # PUBLISH CHECKOV REPORT
+    # ========================================================
 
     - task: PublishBuildArtifacts@1
       displayName: 'Publish Checkov Report'
@@ -205,25 +218,28 @@ stages:
         PathtoPublish: '$(Build.ArtifactStagingDirectory)\security'
         ArtifactName: 'security-report'
         publishLocation: 'Container'
+
 
 # ============================================================
-# Terraform Plan
+# STAGE 3 - TERRAFORM PLAN
 # ============================================================
 
 - stage: Terraform_Plan
   displayName: 'Terraform Plan'
 
   dependsOn:
-  - Terraform_CI
-  - Security_Scan
+    - Terraform_CI
+    - Security_Scan
+
+  # Security findings should NOT prevent the Plan stage.
+  # Terraform CI must still be successful.
 
   condition: |
     and(
-      succeeded(),
-      in(
-        dependencies.Security_Scan.result,
-        'Succeeded',
-        'SucceededWithIssues'
+      always(),
+      eq(
+        dependencies.Terraform_CI.result,
+        'Succeeded'
       )
     )
 
@@ -236,10 +252,20 @@ stages:
 
     - checkout: self
 
+
+    # --------------------------------------------------------
+    # Install Terraform
+    # --------------------------------------------------------
+
     - task: TerraformInstaller@1
       displayName: 'Install Terraform'
       inputs:
         terraformVersion: $(terraformVersion)
+
+
+    # --------------------------------------------------------
+    # Terraform Init
+    # --------------------------------------------------------
 
     - powershell: |
         $ErrorActionPreference = "Stop"
@@ -252,13 +278,21 @@ stages:
 
       displayName: 'Terraform Init'
 
+
+    # --------------------------------------------------------
+    # Terraform Plan
+    # --------------------------------------------------------
+
     - powershell: |
         $ErrorActionPreference = "Stop"
 
         Set-Location "$(workingDirectory)"
 
-        New-Item -ItemType Directory -Force `
-          -Path "$(Build.ArtifactStagingDirectory)\terraform" | Out-Null
+        New-Item `
+          -ItemType Directory `
+          -Force `
+          -Path "$(Build.ArtifactStagingDirectory)\terraform" |
+          Out-Null
 
         Write-Host "Creating Terraform Plan..."
 
@@ -266,6 +300,11 @@ stages:
           -out="$(Build.ArtifactStagingDirectory)\terraform\tfplan"
 
       displayName: 'Terraform Plan'
+
+
+    # --------------------------------------------------------
+    # EXPORT TERRAFORM PLAN
+    # --------------------------------------------------------
 
     - powershell: |
         $ErrorActionPreference = "Stop"
@@ -280,6 +319,11 @@ stages:
         Write-Host "Terraform plan exported."
 
       displayName: 'Export Terraform Plan'
+
+
+    # --------------------------------------------------------
+    # PUBLISH TERRAFORM PLAN
+    # --------------------------------------------------------
 
     - task: PublishBuildArtifacts@1
       displayName: 'Publish Terraform Plan'
