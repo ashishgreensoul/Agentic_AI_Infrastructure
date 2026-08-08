@@ -1,0 +1,166 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  name: Agentic-AI-POOL
+
+variables:
+  terraformVersion: '1.14.0'
+  workingDirectory: 'environments/dev'
+
+stages:
+
+# =========================================================
+# STAGE 1 - TERRAFORM CI
+# =========================================================
+
+- stage: Terraform_CI
+  displayName: 'Terraform CI'
+
+  jobs:
+
+  - job: Validate
+    displayName: 'Terraform Validate'
+
+    steps:
+
+    - checkout: self
+
+    # Install Terraform
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: $(terraformVersion)
+
+    # Terraform Format
+    - script: |
+        cd $(workingDirectory)
+        terraform fmt -check -recursive
+      displayName: 'Terraform Format Check'
+
+    # Terraform Init
+    - script: |
+        cd $(workingDirectory)
+        terraform init -backend=false
+      displayName: 'Terraform Init'
+
+    # Terraform Validate
+    - script: |
+        cd $(workingDirectory)
+        terraform validate
+      displayName: 'Terraform Validate'
+
+
+# =========================================================
+# STAGE 2 - SECURITY SCAN
+# =========================================================
+
+- stage: Security_Scan
+  displayName: 'Terraform Security Scan'
+
+  dependsOn: Terraform_CI
+  condition: succeeded()
+
+  jobs:
+
+  - job: Security
+    displayName: 'Terraform Security'
+
+    steps:
+
+    - checkout: self
+
+
+    # =====================================================
+    # Install TFLint
+    # =====================================================
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+
+        Write-Host "Downloading latest TFLint release..."
+
+        $release = Invoke-RestMethod `
+          -Uri "https://api.github.com/repos/terraform-linters/tflint/releases/latest"
+
+        $asset = $release.assets |
+          Where-Object {
+            $_.name -eq "tflint_windows_amd64.zip"
+          } |
+          Select-Object -First 1
+
+        if (-not $asset) {
+          throw "TFLint Windows AMD64 package not found"
+        }
+
+        $zip = "$(Agent.TempDirectory)\tflint.zip"
+        $dir = "$(Agent.TempDirectory)\tflint"
+
+        Write-Host "Downloading: $($asset.browser_download_url)"
+
+        Invoke-WebRequest `
+          -Uri $asset.browser_download_url `
+          -OutFile $zip
+
+        if (Test-Path $dir) {
+          Remove-Item $dir -Recurse -Force
+        }
+
+        Expand-Archive `
+          -Path $zip `
+          -DestinationPath $dir `
+          -Force
+
+        Write-Host "Adding TFLint to PATH..."
+
+        Write-Host "##vso[task.prependpath]$dir"
+
+        & "$dir\tflint.exe" --version
+
+      displayName: 'Install TFLint'
+
+
+    # =====================================================
+    # Run TFLint
+    # =====================================================
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+
+        Set-Location "$(workingDirectory)"
+
+        Write-Host "Initializing TFLint..."
+
+        tflint --init
+
+        Write-Host "Running TFLint..."
+
+        tflint
+
+      displayName: 'Run TFLint'
+
+
+    # =====================================================
+    # Install & Run Checkov
+    # =====================================================
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+
+        Write-Host "Installing Checkov..."
+
+        python -m pip install --upgrade pip
+        python -m pip install checkov
+
+        Write-Host "Running Checkov..."
+
+        checkov -d "$(workingDirectory)"
+
+      displayName: 'Run Checkov'
