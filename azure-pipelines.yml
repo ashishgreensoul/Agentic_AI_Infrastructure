@@ -107,7 +107,6 @@ stages:
 
     - checkout: self
 
-
     # ========================================================
     # INSTALL TFLINT
     # ========================================================
@@ -190,11 +189,18 @@ stages:
         python -m pip install --upgrade pip
         python -m pip install checkov
 
+        $securityDir = "$(Build.ArtifactStagingDirectory)\security"
+
         New-Item `
           -ItemType Directory `
           -Force `
-          -Path "$(Build.ArtifactStagingDirectory)\security" |
+          -Path $securityDir |
           Out-Null
+
+        $checkovReport = "$securityDir\checkov.json"
+
+        Write-Host "Checkov report path:"
+        Write-Host $checkovReport
 
         Write-Host "Running Checkov..."
 
@@ -202,7 +208,17 @@ stages:
           -d "$(workingDirectory)" `
           --framework terraform `
           -o json `
-          --output-file-path "$(Build.ArtifactStagingDirectory)\security\checkov.json"
+          --output-file-path $checkovReport
+
+        if (-not (Test-Path $checkovReport)) {
+          Write-Error "Checkov report was not created."
+          exit 1
+        }
+
+        Write-Host "Checkov report created successfully."
+
+        Get-Item $checkovReport |
+          Format-List FullName,Length,LastWriteTime
 
       displayName: 'Run Checkov'
       continueOnError: true
@@ -231,9 +247,6 @@ stages:
     - Terraform_CI
     - Security_Scan
 
-  # Security findings should NOT prevent the Plan stage.
-  # Terraform CI must still be successful.
-
   condition: |
     and(
       always(),
@@ -251,7 +264,6 @@ stages:
     steps:
 
     - checkout: self
-
 
     # --------------------------------------------------------
     # Install Terraform
@@ -288,16 +300,18 @@ stages:
 
         Set-Location "$(workingDirectory)"
 
+        $terraformDir = "$(Build.ArtifactStagingDirectory)\terraform"
+
         New-Item `
           -ItemType Directory `
           -Force `
-          -Path "$(Build.ArtifactStagingDirectory)\terraform" |
+          -Path $terraformDir |
           Out-Null
 
         Write-Host "Creating Terraform Plan..."
 
         terraform plan `
-          -out="$(Build.ArtifactStagingDirectory)\terraform\tfplan"
+          -out="$terraformDir\tfplan"
 
       displayName: 'Terraform Plan'
 
@@ -311,10 +325,12 @@ stages:
 
         Set-Location "$(workingDirectory)"
 
+        $terraformDir = "$(Build.ArtifactStagingDirectory)\terraform"
+
         terraform show `
           -no-color `
-          "$(Build.ArtifactStagingDirectory)\terraform\tfplan" `
-          > "$(Build.ArtifactStagingDirectory)\terraform\terraform-plan.txt"
+          "$terraformDir\tfplan" `
+          > "$terraformDir\terraform-plan.txt"
 
         Write-Host "Terraform plan exported."
 
@@ -331,6 +347,7 @@ stages:
         PathtoPublish: '$(Build.ArtifactStagingDirectory)\terraform'
         ArtifactName: 'terraform-plan'
         publishLocation: 'Container'
+
 
 # ============================================================
 # STAGE 4 - AI SECURITY REVIEW
@@ -360,9 +377,10 @@ stages:
 
     - checkout: self
 
-    # --------------------------------------------------------
-    # DOWNLOAD CHECKOV REPORT FROM SECURITY SCAN
-    # --------------------------------------------------------
+
+    # ========================================================
+    # DOWNLOAD CHECKOV REPORT
+    # ========================================================
 
     - task: DownloadBuildArtifacts@1
       displayName: 'Download Checkov Report'
@@ -373,9 +391,9 @@ stages:
         downloadPath: '$(Pipeline.Workspace)'
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # INSTALL PYTHON DEPENDENCIES
-    # --------------------------------------------------------
+    # ========================================================
 
     - powershell: |
 
@@ -392,9 +410,9 @@ stages:
       displayName: 'Install Azure AI SDK'
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # VERIFY CHECKOV REPORT
-    # --------------------------------------------------------
+    # ========================================================
 
     - powershell: |
 
@@ -409,21 +427,36 @@ stages:
 
           Write-Error "Checkov report not found."
 
+          Write-Host "Available files:"
+
           Get-ChildItem `
-            "$(Pipeline.Workspace)\security-report" `
-            -Recurse
+            "$(Pipeline.Workspace)" `
+            -Recurse |
+            Select-Object FullName
 
           exit 1
         }
 
         Write-Host "Checkov report found successfully."
 
+        Get-Item $report |
+          Format-List FullName,Length,LastWriteTime
+
       displayName: 'Verify Checkov Report'
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # PREPARE CHECKOV REPORT FOR AI
-    # --------------------------------------------------------
+    # ========================================================
+    #
+    # IMPORTANT:
+    # The downloaded artifact can have restrictive Windows
+    # permissions/locks on the self-hosted agent.
+    #
+    # Therefore we copy it to Agent.TempDirectory and the
+    # Python AI review reads ONLY this temporary copy.
+    #
+    # ========================================================
 
     - powershell: |
 
@@ -432,10 +465,22 @@ stages:
         $source = "$(Pipeline.Workspace)\security-report\checkov.json"
         $destination = "$(Agent.TempDirectory)\checkov-ai.json"
 
+        Write-Host "=========================================="
+        Write-Host "Preparing Checkov report for AI review"
+        Write-Host "=========================================="
+
         Write-Host "Source:"
         Write-Host $source
 
-        Write-Host "Copying Checkov report to temporary location..."
+        Write-Host "Destination:"
+        Write-Host $destination
+
+        if (-not (Test-Path $source)) {
+          Write-Error "Source Checkov report does not exist."
+          exit 1
+        }
+
+        Write-Host "Copying Checkov report..."
 
         Copy-Item `
           -Path $source `
@@ -447,15 +492,41 @@ stages:
           exit 1
         }
 
-        Write-Host "Temporary Checkov report created:"
-        Write-Host $destination
+        Write-Host "Temporary Checkov report created successfully."
+
+        Get-Item $destination |
+          Format-List FullName,Length,LastWriteTime
+
+        Write-Host "Testing temporary report readability..."
+
+        try {
+
+          $content = Get-Content `
+            -Path $destination `
+            -Raw `
+            -ErrorAction Stop
+
+          if ([string]::IsNullOrWhiteSpace($content)) {
+            Write-Error "Temporary Checkov report is empty."
+            exit 1
+          }
+
+          Write-Host "Temporary Checkov report is readable."
+
+        }
+        catch {
+
+          Write-Error "Unable to read temporary Checkov report."
+          Write-Error $_
+          exit 1
+        }
 
       displayName: 'Prepare Checkov Report for AI'
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # CALL MICROSOFT FOUNDRY AGENT
-    # --------------------------------------------------------
+    # ========================================================
 
     - task: AzureCLI@2
       displayName: 'Run Terraform Security AI Review'
@@ -472,10 +543,25 @@ stages:
           Write-Host "Microsoft Foundry AI Security Review"
           Write-Host "=========================================="
 
-          $report = "$(Pipeline.Workspace)\security-report\checkov.json"
+          # IMPORTANT:
+          # DO NOT READ THE ORIGINAL DOWNLOADED ARTIFACT.
+          # Use the temporary copy created in the previous step.
 
-          Write-Host "Checkov report:"
+          $report = "$(Agent.TempDirectory)\checkov-ai.json"
+
+          Write-Host "AI Checkov report:"
           Write-Host $report
+
+          if (-not (Test-Path $report)) {
+              Write-Error "AI Checkov report not found."
+              exit 1
+          }
+
+          Write-Host "AI Checkov report exists."
+
+          Get-Item $report |
+            Format-List FullName,Length,LastWriteTime
+
 
           # --------------------------------------------------
           # Create Python script
@@ -484,6 +570,7 @@ stages:
           @'
           import json
           import os
+          import time
 
           from azure.identity import DefaultAzureCredential
           from azure.ai.projects import AIProjectClient
@@ -502,17 +589,75 @@ stages:
           report_path = os.environ["CHECKOV_REPORT"]
 
 
+          print("==========================================")
+          print("Terraform Security AI Review")
+          print("==========================================")
+
+          print(f"Checkov report path: {report_path}")
+
+
           # --------------------------------------------------
-          # Read Checkov report
+          # Verify report
           # --------------------------------------------------
 
-          with open(
-              report_path,
-              "r",
-              encoding="utf-8"
-          ) as f:
+          if not os.path.exists(report_path):
+              raise FileNotFoundError(
+                  f"Checkov report not found: {report_path}"
+              )
 
-              checkov_report = json.load(f)
+
+          print(
+              f"Checkov report size: "
+              f"{os.path.getsize(report_path)} bytes"
+          )
+
+
+          # --------------------------------------------------
+          # Read Checkov report with retry
+          # --------------------------------------------------
+
+          checkov_report = None
+
+          for attempt in range(1, 6):
+
+              try:
+
+                  print(
+                      f"Reading Checkov report "
+                      f"(attempt {attempt}/5)..."
+                  )
+
+                  with open(
+                      report_path,
+                      "r",
+                      encoding="utf-8"
+                  ) as f:
+
+                      checkov_report = json.load(f)
+
+                  print(
+                      "Checkov report loaded successfully."
+                  )
+
+                  break
+
+              except PermissionError as exc:
+
+                  print(
+                      f"Permission denied on attempt "
+                      f"{attempt}: {exc}"
+                  )
+
+                  if attempt == 5:
+                      raise
+
+                  time.sleep(2)
+
+
+          if checkov_report is None:
+              raise RuntimeError(
+                  "Unable to load Checkov report."
+              )
 
 
           # --------------------------------------------------
@@ -554,6 +699,9 @@ stages:
 
           Clearly distinguish confirmed information from assumptions.
 
+          If the Checkov report contains multiple findings,
+          review each important finding separately.
+
           Checkov report:
 
           {json.dumps(checkov_report, indent=2)}
@@ -564,12 +712,16 @@ stages:
           # Authenticate using Azure identity
           # --------------------------------------------------
 
+          print("Creating DefaultAzureCredential...")
+
           credential = DefaultAzureCredential()
 
 
           # --------------------------------------------------
           # Create Foundry project client
           # --------------------------------------------------
+
+          print("Creating Foundry project client...")
 
           project_client = AIProjectClient(
               endpoint=endpoint,
@@ -581,12 +733,19 @@ stages:
           # Get OpenAI client
           # --------------------------------------------------
 
+          print("Getting OpenAI client...")
+
           openai_client = project_client.get_openai_client()
 
 
           # --------------------------------------------------
           # Call Terraform Security Reviewer Agent
           # --------------------------------------------------
+
+          print(
+              f"Calling Foundry agent: "
+              f"{agent_name} v{agent_version}"
+          )
 
           response = openai_client.responses.create(
 
@@ -624,14 +783,41 @@ stages:
 
           '@ | Out-File `
               -FilePath "$(Agent.TempDirectory)\ai_review.py" `
-              -Encoding utf8
+              -Encoding utf8 `
+              -Force
+
+
+          # --------------------------------------------------
+          # Verify Python script
+          # --------------------------------------------------
+
+          if (-not (Test-Path "$(Agent.TempDirectory)\ai_review.py")) {
+
+              Write-Error "AI review Python script was not created."
+
+              exit 1
+          }
+
+          Write-Host "Python AI review script created successfully."
 
 
           # --------------------------------------------------
           # Execute AI reviewer
           # --------------------------------------------------
 
+          Write-Host "Starting Terraform Security AI Review..."
+
           python "$(Agent.TempDirectory)\ai_review.py"
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Error `
+                "Terraform Security AI Review failed with exit code $LASTEXITCODE."
+
+              exit $LASTEXITCODE
+          }
+
+          Write-Host "Terraform Security AI Review completed successfully."
 
 
       env:
@@ -641,5 +827,9 @@ stages:
         FOUNDRY_AGENT_NAME: 'Terraform-Security-Reviewer'
 
         FOUNDRY_AGENT_VERSION: '2'
+
+        # IMPORTANT:
+        # Use temporary copied report instead of the downloaded
+        # artifact path that caused PermissionError.
 
         CHECKOV_REPORT: '$(Agent.TempDirectory)\checkov-ai.json'
