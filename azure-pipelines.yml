@@ -204,7 +204,7 @@ stages:
         $source = "$(Pipeline.Workspace)\CheckovReport"
         $target = "$(Agent.TempDirectory)\checkov.json"
 
-        $file = Get-ChildItem -Path $source -Recurse -File | Where-Object { $_.Name -eq "checkov.json" } | Select-Object -First 1
+        $file = Get-ChildItem -Path $source -Recurse -File | Select-Object -First 1
 
         if (!$file) {
           Write-Error "Checkov report file not found in $source"
