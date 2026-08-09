@@ -198,6 +198,31 @@ stages:
         buildType: 'current'
         artifactName: 'CheckovReport'
         targetPath: '$(Pipeline.Workspace)\CheckovReport'
+
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+        $source = "$(Pipeline.Workspace)\CheckovReport"
+        $target = "$(Agent.TempDirectory)\checkov.json"
+
+        $file = Get-ChildItem -Path $source -Recurse -File | Where-Object { $_.Name -eq "checkov.json" } | Select-Object -First 1
+
+        if (!$file) {
+          Write-Error "Checkov report file not found in $source"
+          Get-ChildItem -Path $source -Recurse -Force | Format-Table FullName,Length
+          exit 1
+        }
+
+        Copy-Item -LiteralPath $file.FullName -Destination $target -Force
+
+        if (!(Test-Path -LiteralPath $target -PathType Leaf)) {
+          Write-Error "Failed to prepare Checkov report: $target"
+          exit 1
+        }
+
+        Write-Host "Checkov report copied to: $target"
+        Write-Host "Checkov size: $((Get-Item -LiteralPath $target).Length) bytes"
+      displayName: 'Prepare Checkov Report'
+
     - task: DownloadPipelineArtifact@2
       displayName: 'Download Terraform Plan'
       inputs:
@@ -235,7 +260,7 @@ stages:
           $env:FOUNDRY_PROJECT_ENDPOINT = "$(foundryEndpoint)"
           $env:FOUNDRY_AGENT_NAME = "$(foundryAgentName)"
           $env:FOUNDRY_AGENT_VERSION = "$(foundryAgentVersion)"
-          $env:CHECKOV_REPORT = "$(Pipeline.Workspace)\CheckovReport\checkov.json"
+          $env:CHECKOV_REPORT = "$(Agent.TempDirectory)\checkov.json"
           $env:TERRAFORM_PLAN_JSON = "$(Pipeline.Workspace)\TerraformPlan\tfplan.json"
           Write-Host "Executing Terraform Security Reviewer..."
           python $pyPath
