@@ -356,7 +356,7 @@ stages:
         Write-Host "Working directory:"
         Write-Host "$(TerraformWorkingDirectory)"
 
-        Set-Location "$(TerraformWorkingDirectory)"
+        Set-Location "$(Build.SourcesDirectory)\environments\dev"
 
         Get-ChildItem -Filter "*.tf"
 
@@ -380,7 +380,7 @@ stages:
         Write-Host "Terraform Plan"
         Write-Host "========================================"
 
-        Set-Location "$(TerraformWorkingDirectory)"
+        Set-Location "$(Build.SourcesDirectory)\environments\dev"
 
         Write-Host "Current directory:"
         Get-Location
