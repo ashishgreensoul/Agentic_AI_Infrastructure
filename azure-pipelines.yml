@@ -214,11 +214,21 @@ stages:
     - checkout: self
       displayName: 'Checkout Repository'
 
+
+    # --------------------------------------------------------
+    # Install Terraform
+    # --------------------------------------------------------
+
     - powershell: |
 
-        Write-Host "Installing Terraform $(terraformVersion)..."
+        Write-Host "========================================"
+        Write-Host "Installing Terraform"
+        Write-Host "========================================"
 
-        $terraformUrl = "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_windows_amd64.zip"
+        $terraformVersion = "$(terraformVersion)"
+
+        $terraformUrl = "https://releases.hashicorp.com/terraform/$terraformVersion/terraform_${terraformVersion}_windows_amd64.zip"
+
         $zipFile = "$(Agent.TempDirectory)\terraform.zip"
         $terraformDir = "$(Agent.TempDirectory)\terraform"
 
@@ -246,7 +256,109 @@ stages:
 
       displayName: 'Install Terraform'
 
+
+    # --------------------------------------------------------
+    # Find Terraform Configuration
+    # --------------------------------------------------------
+
     - powershell: |
+
+        Write-Host "========================================"
+        Write-Host "Finding Terraform Configuration"
+        Write-Host "========================================"
+
+        $repo = "$(Build.SourcesDirectory)"
+
+        Write-Host "Repository:"
+        Write-Host $repo
+
+        Write-Host ""
+        Write-Host "Terraform files found:"
+
+        Get-ChildItem `
+          -Path $repo `
+          -Filter "*.tf" `
+          -Recurse `
+          -File |
+          Select-Object FullName
+
+        # ----------------------------------------------------
+        # Prefer root directory if Terraform files exist there
+        # ----------------------------------------------------
+
+        $rootTfFiles = Get-ChildItem `
+          -Path $repo `
+          -Filter "*.tf" `
+          -File
+
+        if ($rootTfFiles.Count -gt 0) {
+
+            $terraformWorkingDirectory = $repo
+
+        }
+        else {
+
+            # ------------------------------------------------
+            # Find directories containing main.tf
+            # ------------------------------------------------
+
+            $mainTf = Get-ChildItem `
+              -Path $repo `
+              -Filter "main.tf" `
+              -Recurse `
+              -File
+
+            if ($mainTf.Count -eq 0) {
+
+                Write-Error "No Terraform configuration found in repository."
+
+                Write-Host ""
+                Write-Host "Repository contents:"
+                Get-ChildItem -Path $repo -Recurse -Directory |
+                  Select-Object FullName
+
+                exit 1
+            }
+
+            if ($mainTf.Count -gt 1) {
+
+                Write-Warning "Multiple main.tf files found."
+
+                $mainTf |
+                  Select-Object FullName |
+                  Format-Table
+            }
+
+            $terraformWorkingDirectory =
+              $mainTf[0].Directory.FullName
+        }
+
+        Write-Host ""
+        Write-Host "Terraform working directory:"
+        Write-Host $terraformWorkingDirectory
+
+        # Save for next steps
+        Write-Host "##vso[task.setvariable variable=TerraformWorkingDirectory]$terraformWorkingDirectory"
+
+      displayName: 'Locate Terraform Configuration'
+
+
+    # --------------------------------------------------------
+    # Terraform Init
+    # --------------------------------------------------------
+
+    - powershell: |
+
+        Write-Host "========================================"
+        Write-Host "Terraform Init"
+        Write-Host "========================================"
+
+        Write-Host "Working directory:"
+        Write-Host "$(TerraformWorkingDirectory)"
+
+        Set-Location "$(TerraformWorkingDirectory)"
+
+        Get-ChildItem -Filter "*.tf"
 
         terraform init
 
@@ -257,7 +369,25 @@ stages:
 
       displayName: 'Terraform Init'
 
+
+    # --------------------------------------------------------
+    # Terraform Plan
+    # --------------------------------------------------------
+
     - powershell: |
+
+        Write-Host "========================================"
+        Write-Host "Terraform Plan"
+        Write-Host "========================================"
+
+        Set-Location "$(TerraformWorkingDirectory)"
+
+        Write-Host "Current directory:"
+        Get-Location
+
+        Write-Host ""
+        Write-Host "Terraform configuration:"
+        Get-ChildItem -Filter "*.tf"
 
         $planFile = "$(Pipeline.Workspace)\tfplan"
 
@@ -269,9 +399,21 @@ stages:
             exit 1
         }
 
+        Write-Host ""
+        Write-Host "Terraform plan created successfully."
+
       displayName: 'Terraform Plan'
 
+
+    # --------------------------------------------------------
+    # Export Terraform Plan JSON
+    # --------------------------------------------------------
+
     - powershell: |
+
+        Write-Host "========================================"
+        Write-Host "Export Terraform Plan JSON"
+        Write-Host "========================================"
 
         $planFile = "$(Pipeline.Workspace)\tfplan"
         $jsonFile = "$(Pipeline.Workspace)\tfplan.json"
@@ -300,7 +442,14 @@ stages:
             exit 1
         }
 
+        Write-Host "Terraform plan JSON created successfully."
+
       displayName: 'Export Terraform Plan JSON'
+
+
+    # --------------------------------------------------------
+    # Publish Terraform Plan
+    # --------------------------------------------------------
 
     - task: PublishPipelineArtifact@1
       displayName: 'Publish Terraform Plan'
