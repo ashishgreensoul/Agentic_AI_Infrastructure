@@ -5,7 +5,7 @@ pool:
   name: Agentic-AI-POOL
 
 variables:
-  terraformVersion: '1.9.8'
+  terraformVersion: '1.14.0'
   azureServiceConnection: 'Agentic-AI-Service_connection'
 
   foundryEndpoint: 'https://foundry-agentic-ai-dev-new.services.ai.azure.com/api/projects/proj-agentic-ai'
