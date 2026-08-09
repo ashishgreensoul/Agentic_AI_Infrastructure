@@ -422,6 +422,38 @@ stages:
 
 
     # --------------------------------------------------------
+    # PREPARE CHECKOV REPORT FOR AI
+    # --------------------------------------------------------
+
+    - powershell: |
+
+        $ErrorActionPreference = "Stop"
+
+        $source = "$(Pipeline.Workspace)\security-report\checkov.json"
+        $destination = "$(Agent.TempDirectory)\checkov-ai.json"
+
+        Write-Host "Source:"
+        Write-Host $source
+
+        Write-Host "Copying Checkov report to temporary location..."
+
+        Copy-Item `
+          -Path $source `
+          -Destination $destination `
+          -Force
+
+        if (-not (Test-Path $destination)) {
+          Write-Error "Failed to create temporary Checkov report."
+          exit 1
+        }
+
+        Write-Host "Temporary Checkov report created:"
+        Write-Host $destination
+
+      displayName: 'Prepare Checkov Report for AI'
+
+
+    # --------------------------------------------------------
     # CALL MICROSOFT FOUNDRY AGENT
     # --------------------------------------------------------
 
@@ -610,4 +642,4 @@ stages:
 
         FOUNDRY_AGENT_VERSION: '2'
 
-        CHECKOV_REPORT: '$(Pipeline.Workspace)\security-report\checkov.json'
+        CHECKOV_REPORT: '$(Agent.TempDirectory)\checkov-ai.json'
