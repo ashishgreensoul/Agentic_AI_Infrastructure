@@ -331,3 +331,283 @@ stages:
         PathtoPublish: '$(Build.ArtifactStagingDirectory)\terraform'
         ArtifactName: 'terraform-plan'
         publishLocation: 'Container'
+
+# ============================================================
+# STAGE 4 - AI SECURITY REVIEW
+# ============================================================
+
+- stage: AI_Security_Review
+  displayName: 'AI Security Review'
+
+  dependsOn:
+    - Security_Scan
+
+  condition: |
+    and(
+      always(),
+      not(canceled())
+    )
+
+  jobs:
+
+  - job: AIReview
+    displayName: 'Review Checkov Findings with AI'
+
+    pool:
+      name: Agentic-AI-POOL
+
+    steps:
+
+    - checkout: self
+
+    # --------------------------------------------------------
+    # DOWNLOAD CHECKOV REPORT FROM SECURITY SCAN
+    # --------------------------------------------------------
+
+    - task: DownloadBuildArtifacts@1
+      displayName: 'Download Checkov Report'
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'security-report'
+        downloadPath: '$(Pipeline.Workspace)'
+
+
+    # --------------------------------------------------------
+    # INSTALL PYTHON DEPENDENCIES
+    # --------------------------------------------------------
+
+    - powershell: |
+
+        $ErrorActionPreference = "Stop"
+
+        Write-Host "Installing Azure AI Projects SDK..."
+
+        python -m pip install --upgrade pip
+
+        python -m pip install "azure-ai-projects>=2.3.0"
+
+        Write-Host "Azure AI Projects SDK installed."
+
+      displayName: 'Install Azure AI SDK'
+
+
+    # --------------------------------------------------------
+    # VERIFY CHECKOV REPORT
+    # --------------------------------------------------------
+
+    - powershell: |
+
+        $ErrorActionPreference = "Stop"
+
+        $report = "$(Pipeline.Workspace)\security-report\checkov.json"
+
+        Write-Host "Looking for Checkov report:"
+        Write-Host $report
+
+        if (-not (Test-Path $report)) {
+
+          Write-Error "Checkov report not found."
+
+          Get-ChildItem `
+            "$(Pipeline.Workspace)\security-report" `
+            -Recurse
+
+          exit 1
+        }
+
+        Write-Host "Checkov report found successfully."
+
+      displayName: 'Verify Checkov Report'
+
+
+    # --------------------------------------------------------
+    # CALL MICROSOFT FOUNDRY AGENT
+    # --------------------------------------------------------
+
+    - task: AzureCLI@2
+      displayName: 'Run Terraform Security AI Review'
+      inputs:
+        azureSubscription: 'Agentic-AI-Service_connection'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+
+        inlineScript: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=========================================="
+          Write-Host "Microsoft Foundry AI Security Review"
+          Write-Host "=========================================="
+
+          $report = "$(Pipeline.Workspace)\security-report\checkov.json"
+
+          Write-Host "Checkov report:"
+          Write-Host $report
+
+          # --------------------------------------------------
+          # Create Python script
+          # --------------------------------------------------
+
+          @'
+          import json
+          import os
+
+          from azure.identity import DefaultAzureCredential
+          from azure.ai.projects import AIProjectClient
+
+
+          # --------------------------------------------------
+          # Configuration
+          # --------------------------------------------------
+
+          endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+
+          agent_name = os.environ["FOUNDRY_AGENT_NAME"]
+
+          agent_version = os.environ["FOUNDRY_AGENT_VERSION"]
+
+          report_path = os.environ["CHECKOV_REPORT"]
+
+
+          # --------------------------------------------------
+          # Read Checkov report
+          # --------------------------------------------------
+
+          with open(
+              report_path,
+              "r",
+              encoding="utf-8"
+          ) as f:
+
+              checkov_report = json.load(f)
+
+
+          # --------------------------------------------------
+          # Build AI prompt
+          # --------------------------------------------------
+
+          prompt = f"""
+          You are an Azure DevOps and Terraform Security Reviewer.
+
+          Analyze the Checkov security scan from an Azure DevOps
+          Terraform CI/CD pipeline.
+
+          Review the findings carefully.
+
+          For each important finding provide:
+
+          1. Checkov rule ID
+          2. Severity
+          3. Resource affected
+          4. Why Checkov failed
+          5. Root cause
+          6. Security risk
+          7. Correct Terraform remediation
+          8. Exact Terraform code where possible
+          9. Whether the fix belongs inside a module,
+             root configuration, or separate module
+          10. Validation commands
+          11. Whether it appears to be a false positive
+              or requires an approved exception
+
+          Prioritize:
+
+          - CRITICAL
+          - HIGH
+          - MEDIUM
+
+          Do not invent resources, variables, modules,
+          or IDs that are not present in the supplied data.
+
+          Clearly distinguish confirmed information from assumptions.
+
+          Checkov report:
+
+          {json.dumps(checkov_report, indent=2)}
+          """
+
+
+          # --------------------------------------------------
+          # Authenticate using Azure identity
+          # --------------------------------------------------
+
+          credential = DefaultAzureCredential()
+
+
+          # --------------------------------------------------
+          # Create Foundry project client
+          # --------------------------------------------------
+
+          project_client = AIProjectClient(
+              endpoint=endpoint,
+              credential=credential,
+          )
+
+
+          # --------------------------------------------------
+          # Get OpenAI client
+          # --------------------------------------------------
+
+          openai_client = project_client.get_openai_client()
+
+
+          # --------------------------------------------------
+          # Call Terraform Security Reviewer Agent
+          # --------------------------------------------------
+
+          response = openai_client.responses.create(
+
+              input=[
+                  {
+                      "role": "user",
+                      "content": prompt
+                  }
+              ],
+
+              extra_body={
+                  "agent_reference": {
+                      "name": agent_name,
+                      "version": agent_version,
+                      "type": "agent_reference"
+                  }
+              },
+          )
+
+
+          # --------------------------------------------------
+          # Print AI result
+          # --------------------------------------------------
+
+          print("")
+          print("==========================================")
+          print("AI SECURITY REVIEW RESULT")
+          print("==========================================")
+
+          print(response.output_text)
+
+          print("==========================================")
+          print("AI SECURITY REVIEW COMPLETED")
+          print("==========================================")
+
+          '@ | Out-File `
+              -FilePath "$(Agent.TempDirectory)\ai_review.py" `
+              -Encoding utf8
+
+
+          # --------------------------------------------------
+          # Execute AI reviewer
+          # --------------------------------------------------
+
+          python "$(Agent.TempDirectory)\ai_review.py"
+
+
+      env:
+
+        FOUNDRY_PROJECT_ENDPOINT: 'https://foundry-agentic-ai-dev-new.services.ai.azure.com/api/projects/proj-agentic-ai'
+
+        FOUNDRY_AGENT_NAME: 'Terraform-Security-Reviewer'
+
+        FOUNDRY_AGENT_VERSION: '2'
+
+        CHECKOV_REPORT: '$(Pipeline.Workspace)\security-report\checkov.json'
