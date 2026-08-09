@@ -524,15 +524,15 @@ module "diagnostic_settings" {
 
     }
 
-    aks = {
+    # aks = {
 
-      name = local.diagnostic_settings.aks.name
+    #   name = local.diagnostic_settings.aks.name
 
-      target_resource_id = module.aks.aks_id["primary"]
+    #   target_resource_id = module.aks.aks_id["primary"]
 
-      log_analytics_workspace_id = module.log_analytics.workspace_id["primary"]
+    #   log_analytics_workspace_id = module.log_analytics.workspace_id["primary"]
 
-    }
+    # }
 
   }
 
