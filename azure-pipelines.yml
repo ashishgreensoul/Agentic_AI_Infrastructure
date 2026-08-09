@@ -7,7 +7,7 @@ pool:
 variables:
   terraformVersion: '1.14.0'
   azureServiceConnection: 'Agentic-AI-Service_connection'
-
+  workingDirectory: '$(Build.SourcesDirectory)\environments\dev'
   foundryEndpoint: 'https://foundry-agentic-ai-dev-new.services.ai.azure.com/api/projects/proj-agentic-ai'
   foundryAgentName: 'Terraform-Security-Reviewer'
   foundryAgentVersion: '2'
@@ -15,175 +15,80 @@ variables:
 stages:
 
 # ============================================================
-# 1. TERRAFORM CI
+# 1. TERRAFORM CI - KEEPING EXISTING WORKING FLOW
 # ============================================================
-
 - stage: Terraform_CI
   displayName: 'Terraform CI'
-
   jobs:
   - job: Terraform_Validate
     displayName: 'Terraform Validate'
-
     steps:
-
     - checkout: self
       displayName: 'Checkout Repository'
-
     - powershell: |
-        Write-Host "Installing Terraform $(terraformVersion)..."
-
+        $ErrorActionPreference = "Stop"
         $terraformUrl = "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_windows_amd64.zip"
         $zipFile = "$(Agent.TempDirectory)\terraform.zip"
         $terraformDir = "$(Agent.TempDirectory)\terraform"
-
-        Invoke-WebRequest `
-          -Uri $terraformUrl `
-          -OutFile $zipFile
-
-        if (Test-Path $terraformDir) {
-            Remove-Item $terraformDir -Recurse -Force
-        }
-
+        Invoke-WebRequest -Uri $terraformUrl -OutFile $zipFile
+        if (Test-Path $terraformDir) { Remove-Item $terraformDir -Recurse -Force }
         New-Item -ItemType Directory -Path $terraformDir -Force | Out-Null
-
-        Expand-Archive `
-          -Path $zipFile `
-          -DestinationPath $terraformDir `
-          -Force
-
+        Expand-Archive -Path $zipFile -DestinationPath $terraformDir -Force
         Write-Host "##vso[task.prependpath]$terraformDir"
-
         & "$terraformDir\terraform.exe" version
-
       displayName: 'Install Terraform'
-
     - powershell: |
+        $ErrorActionPreference = "Stop"
+        Set-Location "$(workingDirectory)"
         terraform init
-
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "Terraform init failed."
-            exit 1
-        }
-
+        if ($LASTEXITCODE -ne 0) { Write-Error "Terraform init failed."; exit $LASTEXITCODE }
       displayName: 'Terraform Init'
-
     - powershell: |
+        $ErrorActionPreference = "Stop"
+        Set-Location "$(workingDirectory)"
         terraform validate
-
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "Terraform validate failed."
-            exit 1
-        }
-
+        if ($LASTEXITCODE -ne 0) { Write-Error "Terraform validate failed."; exit $LASTEXITCODE }
       displayName: 'Terraform Validate'
 
-
 # ============================================================
-# 2. CHECKOV SECURITY SCAN
+# 2. CHECKOV SECURITY - KEEPING EXISTING WORKING FLOW
 # ============================================================
-
 - stage: Terraform_Security
   displayName: 'Terraform Security Scan'
-
   dependsOn:
   - Terraform_CI
-
   condition: succeeded()
-
   jobs:
   - job: Terraform_Security
     displayName: 'Terraform Security'
-
     steps:
-
     - checkout: self
       displayName: 'Checkout Repository'
-
     - powershell: |
-        Write-Host "Installing Python..."
-
+        $ErrorActionPreference = "Stop"
         python --version
-
         python -m pip install --upgrade pip
-
         python -m pip install checkov
-
         checkov --version
-
       displayName: 'Install Checkov'
-
     - powershell: |
-
-        Write-Host "========================================"
-        Write-Host "Running Checkov Security Scan"
-        Write-Host "========================================"
-
+        $ErrorActionPreference = "Stop"
         $reportDirectory = "$(Pipeline.Workspace)\security-report"
         $reportFile = "$reportDirectory\checkov.json"
-
-        if (Test-Path $reportDirectory) {
-            Remove-Item $reportDirectory -Recurse -Force
-        }
-
-        New-Item `
-          -ItemType Directory `
-          -Path $reportDirectory `
-          -Force | Out-Null
-
-        checkov `
-          -d "$(Build.SourcesDirectory)" `
-          --framework terraform `
-          --output json `
-          --output-file-path "$reportFile"
-
-        $checkovExitCode = $LASTEXITCODE
-
-        Write-Host "Checkov exit code: $checkovExitCode"
-
-        if (!(Test-Path $reportFile)) {
-            Write-Error "Checkov report was not created."
-            exit 1
-        }
-
-        $fileSize = (Get-Item $reportFile).Length
-
-        Write-Host "Checkov report size: $fileSize bytes"
-
-        if ($fileSize -eq 0) {
-            Write-Error "Checkov report is empty."
-            exit 1
-        }
-
-        if ($checkovExitCode -ne 0) {
-            Write-Warning "Checkov found security findings."
-            Write-Host "Continuing pipeline so AI Security Reviewer can analyze them."
-        }
-        else {
-            Write-Host "Checkov completed successfully."
-        }
-
+        if (Test-Path $reportDirectory) { Remove-Item $reportDirectory -Recurse -Force }
+        New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null
+        checkov -d "$(Build.SourcesDirectory)" --framework terraform --output json --output-file-path "$reportFile"
+        $code = $LASTEXITCODE
+        if (!(Test-Path $reportFile)) { Write-Error "Checkov report was not created."; exit 1 }
+        if ((Get-Item $reportFile).Length -eq 0) { Write-Error "Checkov report is empty."; exit 1 }
+        if ($code -ne 0) { Write-Warning "Checkov found security findings. AI review will analyze them." }
         exit 0
-
       displayName: 'Run Checkov'
-
     - powershell: |
-
         $reportFile = "$(Pipeline.Workspace)\security-report\checkov.json"
-
-        Write-Host "Checking Checkov report..."
-
-        if (!(Test-Path $reportFile)) {
-            Write-Error "Checkov report not found."
-            exit 1
-        }
-
+        if (!(Test-Path $reportFile)) { Write-Error "Checkov report not found."; exit 1 }
         Get-Item $reportFile | Format-List FullName,Length
-
-        Write-Host "Checkov report is ready."
-
       displayName: 'Verify Checkov Report'
-
     - task: PublishPipelineArtifact@1
       displayName: 'Publish Checkov Report'
       inputs:
@@ -191,527 +96,147 @@ stages:
         artifact: 'CheckovReport'
         publishLocation: 'pipeline'
 
-
 # ============================================================
 # 3. TERRAFORM PLAN
 # ============================================================
-
 - stage: Terraform_Plan
   displayName: 'Terraform Plan'
-
   dependsOn:
   - Terraform_CI
-  - Terraform_Security
-
   condition: succeeded()
-
   jobs:
   - job: Terraform_Plan
     displayName: 'Terraform Plan'
-
     steps:
-
     - checkout: self
       displayName: 'Checkout Repository'
-
-
-    # --------------------------------------------------------
-    # Install Terraform
-    # --------------------------------------------------------
-
     - powershell: |
-
-        Write-Host "========================================"
-        Write-Host "Installing Terraform"
-        Write-Host "========================================"
-
-        $terraformVersion = "$(terraformVersion)"
-
-        $terraformUrl = "https://releases.hashicorp.com/terraform/$terraformVersion/terraform_${terraformVersion}_windows_amd64.zip"
-
+        $ErrorActionPreference = "Stop"
+        $terraformUrl = "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_windows_amd64.zip"
         $zipFile = "$(Agent.TempDirectory)\terraform.zip"
         $terraformDir = "$(Agent.TempDirectory)\terraform"
-
-        Invoke-WebRequest `
-          -Uri $terraformUrl `
-          -OutFile $zipFile
-
-        if (Test-Path $terraformDir) {
-            Remove-Item $terraformDir -Recurse -Force
-        }
-
-        New-Item `
-          -ItemType Directory `
-          -Path $terraformDir `
-          -Force | Out-Null
-
-        Expand-Archive `
-          -Path $zipFile `
-          -DestinationPath $terraformDir `
-          -Force
-
+        Invoke-WebRequest -Uri $terraformUrl -OutFile $zipFile
+        if (Test-Path $terraformDir) { Remove-Item $terraformDir -Recurse -Force }
+        New-Item -ItemType Directory -Path $terraformDir -Force | Out-Null
+        Expand-Archive -Path $zipFile -DestinationPath $terraformDir -Force
         Write-Host "##vso[task.prependpath]$terraformDir"
-
         terraform version
-
       displayName: 'Install Terraform'
-
-
-    # --------------------------------------------------------
-    # Find Terraform Configuration
-    # --------------------------------------------------------
-
     - powershell: |
-
-        Write-Host "========================================"
-        Write-Host "Finding Terraform Configuration"
-        Write-Host "========================================"
-
-        $repo = "$(Build.SourcesDirectory)"
-
-        Write-Host "Repository:"
-        Write-Host $repo
-
-        Write-Host ""
-        Write-Host "Terraform files found:"
-
-        Get-ChildItem `
-          -Path $repo `
-          -Filter "*.tf" `
-          -Recurse `
-          -File |
-          Select-Object FullName
-
-        # ----------------------------------------------------
-        # Prefer root directory if Terraform files exist there
-        # ----------------------------------------------------
-
-        $rootTfFiles = Get-ChildItem `
-          -Path $repo `
-          -Filter "*.tf" `
-          -File
-
-        if ($rootTfFiles.Count -gt 0) {
-
-            $terraformWorkingDirectory = $repo
-
-        }
-        else {
-
-            # ------------------------------------------------
-            # Find directories containing main.tf
-            # ------------------------------------------------
-
-            $mainTf = Get-ChildItem `
-              -Path $repo `
-              -Filter "main.tf" `
-              -Recurse `
-              -File
-
-            if ($mainTf.Count -eq 0) {
-
-                Write-Error "No Terraform configuration found in repository."
-
-                Write-Host ""
-                Write-Host "Repository contents:"
-                Get-ChildItem -Path $repo -Recurse -Directory |
-                  Select-Object FullName
-
-                exit 1
-            }
-
-            if ($mainTf.Count -gt 1) {
-
-                Write-Warning "Multiple main.tf files found."
-
-                $mainTf |
-                  Select-Object FullName |
-                  Format-Table
-            }
-
-            $terraformWorkingDirectory =
-              $mainTf[0].Directory.FullName
-        }
-
-        Write-Host ""
-        Write-Host "Terraform working directory:"
-        Write-Host $terraformWorkingDirectory
-
-        # Save for next steps
-        Write-Host "##vso[task.setvariable variable=TerraformWorkingDirectory]$terraformWorkingDirectory"
-
-      displayName: 'Locate Terraform Configuration'
-
-
-    # --------------------------------------------------------
-    # Terraform Init
-    # --------------------------------------------------------
-
-    - powershell: |
-
-        Write-Host "========================================"
-        Write-Host "Terraform Init"
-        Write-Host "========================================"
-
-        Write-Host "Working directory:"
-        Write-Host "$(TerraformWorkingDirectory)"
-
-        Set-Location "$(Build.SourcesDirectory)\environments\dev"
-
-        Get-ChildItem -Filter "*.tf"
-
-        terraform init
-
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "Terraform init failed."
-            exit 1
-        }
-
+        $ErrorActionPreference = "Stop"
+        Set-Location "$(workingDirectory)"
+        Write-Host "Working directory: $(workingDirectory)"
+        Get-ChildItem -Filter "*.tf" | Select-Object Name,Length
+        terraform init -input=false
+        if ($LASTEXITCODE -ne 0) { Write-Error "Terraform init failed."; exit $LASTEXITCODE }
       displayName: 'Terraform Init'
-
-
-    # --------------------------------------------------------
-    # Terraform Plan
-    # --------------------------------------------------------
-
     - powershell: |
-
-        Write-Host "========================================"
-        Write-Host "Terraform Plan"
-        Write-Host "========================================"
-
-        Set-Location "$(Build.SourcesDirectory)\environments\dev"
-
-        Write-Host "Current directory:"
-        Get-Location
-
-        Write-Host ""
-        Write-Host "Terraform configuration:"
-        Get-ChildItem -Filter "*.tf"
-
-        $planFile = "$(Pipeline.Workspace)\tfplan"
-
-        terraform plan `
-          -out="$planFile"
-
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "Terraform plan failed."
-            exit 1
-        }
-
-        Write-Host ""
-        Write-Host "Terraform plan created successfully."
-
+        $ErrorActionPreference = "Stop"
+        Set-Location "$(workingDirectory)"
+        terraform validate
+        if ($LASTEXITCODE -ne 0) { Write-Error "Terraform validate failed."; exit $LASTEXITCODE }
+      displayName: 'Terraform Validate'
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+        Set-Location "$(workingDirectory)"
+        $out = "$(Build.ArtifactStagingDirectory)\terraform"
+        New-Item -ItemType Directory -Path $out -Force | Out-Null
+        $plan = "$out\tfplan"
+        terraform plan -input=false -out="$plan"
+        if ($LASTEXITCODE -ne 0) { Write-Error "Terraform plan failed."; exit $LASTEXITCODE }
+        if (!(Test-Path $plan)) { Write-Error "Terraform plan file was not created."; exit 1 }
       displayName: 'Terraform Plan'
-
-
-    # --------------------------------------------------------
-    # Export Terraform Plan JSON
-    # --------------------------------------------------------
-
     - powershell: |
-
-        Write-Host "========================================"
-        Write-Host "Export Terraform Plan JSON"
-        Write-Host "========================================"
-
-        $planFile = "$(Pipeline.Workspace)\tfplan"
-        $jsonFile = "$(Pipeline.Workspace)\tfplan.json"
-
-        terraform show `
-          -json `
-          "$planFile" `
-          > "$jsonFile"
-
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "Terraform show failed."
-            exit 1
-        }
-
-        if (!(Test-Path $jsonFile)) {
-            Write-Error "Terraform plan JSON was not created."
-            exit 1
-        }
-
-        $size = (Get-Item $jsonFile).Length
-
-        Write-Host "Terraform plan JSON size: $size bytes"
-
-        if ($size -eq 0) {
-            Write-Error "Terraform plan JSON is empty."
-            exit 1
-        }
-
-        Write-Host "Terraform plan JSON created successfully."
-
+        $ErrorActionPreference = "Stop"
+        Set-Location "$(workingDirectory)"
+        $plan = "$(Build.ArtifactStagingDirectory)\terraform\tfplan"
+        $txt = "$(Build.ArtifactStagingDirectory)\terraform\terraform-plan.txt"
+        terraform show -no-color "$plan" | Out-File -FilePath "$txt" -Encoding utf8
+        if (!(Test-Path $txt)) { Write-Error "Terraform plan text was not created."; exit 1 }
+      displayName: 'Export Terraform Plan'
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+        Set-Location "$(workingDirectory)"
+        $plan = "$(Build.ArtifactStagingDirectory)\terraform\tfplan"
+        $json = "$(Build.ArtifactStagingDirectory)\terraform\tfplan.json"
+        $output = terraform show -json "$plan"
+        if ($LASTEXITCODE -ne 0) { Write-Error "Terraform show JSON failed."; exit $LASTEXITCODE }
+        if ([string]::IsNullOrWhiteSpace($output)) { Write-Error "Terraform Plan JSON is empty."; exit 1 }
+        $output | Out-File -FilePath "$json" -Encoding utf8
+        if (!(Test-Path $json) -or (Get-Item $json).Length -eq 0) { Write-Error "Terraform Plan JSON was not created or is empty."; exit 1 }
+        Write-Host "Plan JSON: $json"
       displayName: 'Export Terraform Plan JSON'
-
-
-    # --------------------------------------------------------
-    # Publish Terraform Plan
-    # --------------------------------------------------------
-
     - task: PublishPipelineArtifact@1
       displayName: 'Publish Terraform Plan'
       inputs:
-        targetPath: '$(Pipeline.Workspace)\tfplan.json'
+        targetPath: '$(Build.ArtifactStagingDirectory)\terraform'
         artifact: 'TerraformPlan'
         publishLocation: 'pipeline'
 
-
 # ============================================================
-# 4. AI SECURITY + PLAN REVIEW
+# 4. AGENTIC AI SECURITY REVIEW
 # ============================================================
-
 - stage: AI_Security_Review
-  displayName: 'AI Security Review'
-
+  displayName: 'Agentic AI Security Review'
   dependsOn:
   - Terraform_Security
   - Terraform_Plan
-
-  condition: succeeded()
-
+  condition: |
+    and(
+      succeeded('Terraform_Security'),
+      succeeded('Terraform_Plan')
+    )
   jobs:
-  - job: AI_Review
-    displayName: 'Review Terraform with AI'
-
+  - job: AIReview
+    displayName: 'Review Terraform Plan with AI'
     steps:
-
     - checkout: self
       displayName: 'Checkout Repository'
-
-    # --------------------------------------------------------
-    # Download Checkov artifact from SAME pipeline run
-    # --------------------------------------------------------
-
-    - download: current
-      artifact: CheckovReport
+    - task: DownloadPipelineArtifact@2
       displayName: 'Download Checkov Report'
-
-    # --------------------------------------------------------
-    # Download Terraform Plan from SAME pipeline run
-    # --------------------------------------------------------
-
-    - download: current
-      artifact: TerraformPlan
+      inputs:
+        buildType: 'current'
+        artifactName: 'CheckovReport'
+        targetPath: '$(Pipeline.Workspace)\CheckovReport'
+    - task: DownloadPipelineArtifact@2
       displayName: 'Download Terraform Plan'
-
-    # --------------------------------------------------------
-    # Verify both artifacts
-    # --------------------------------------------------------
-
+      inputs:
+        buildType: 'current'
+        artifactName: 'TerraformPlan'
+        targetPath: '$(Pipeline.Workspace)\TerraformPlan'
     - powershell: |
-
-        Write-Host "========================================"
-        Write-Host "Verifying AI Review Inputs"
-        Write-Host "========================================"
-
-        $checkovFile = "$(Pipeline.Workspace)\CheckovReport\checkov.json"
-        $planFile = "$(Pipeline.Workspace)\TerraformPlan\tfplan.json"
-
-        Write-Host "Checkov:"
-        Write-Host $checkovFile
-
-        if (!(Test-Path $checkovFile)) {
-            Write-Error "Checkov artifact not found."
-            exit 1
-        }
-
-        Write-Host "Terraform Plan:"
-        Write-Host $planFile
-
-        if (!(Test-Path $planFile)) {
-            Write-Error "Terraform Plan artifact not found."
-            exit 1
-        }
-
-        Write-Host ""
-        Write-Host "Both artifacts are available."
-
+        $ErrorActionPreference = "Stop"
+        $checkov = "$(Pipeline.Workspace)\CheckovReport\checkov.json"
+        $plan = "$(Pipeline.Workspace)\TerraformPlan\tfplan.json"
+        Write-Host "Checkov: $checkov"
+        Write-Host "Plan JSON: $plan"
+        if (!(Test-Path $checkov)) { Write-Error "Checkov report not found: $checkov"; exit 1 }
+        if (!(Test-Path $plan)) { Write-Error "Terraform Plan JSON not found: $plan"; exit 1 }
+        Write-Host "Checkov size: $((Get-Item $checkov).Length) bytes"
+        Write-Host "Plan size: $((Get-Item $plan).Length) bytes"
       displayName: 'Verify AI Inputs'
-
-
-    # --------------------------------------------------------
-    # Call Microsoft Foundry Agent
-    # --------------------------------------------------------
-
+    - powershell: |
+        $ErrorActionPreference = "Stop"
+        python --version
+        python -m pip install --upgrade pip
+        python -m pip install "azure-ai-projects>=2.1.0" azure-identity
+      displayName: 'Install Azure AI SDK'
     - task: AzureCLI@2
-      displayName: 'Run Terraform Security AI Review'
+      displayName: 'Run Terraform Security Agent'
       inputs:
         azureSubscription: '$(azureServiceConnection)'
         scriptType: 'ps'
         scriptLocation: 'inlineScript'
-
         inlineScript: |
-
-          Write-Host "========================================"
-          Write-Host "Microsoft Foundry Terraform AI Review"
-          Write-Host "========================================"
-
-          $checkovFile = "$(Pipeline.Workspace)\CheckovReport\checkov.json"
-          $planFile = "$(Pipeline.Workspace)\TerraformPlan\tfplan.json"
-
-          Write-Host ""
-          Write-Host "Reading Checkov report..."
-
-          $checkov = Get-Content `
-            -Path $checkovFile `
-            -Raw
-
-          Write-Host "Reading Terraform plan..."
-
-          $plan = Get-Content `
-            -Path $planFile `
-            -Raw
-
-          # --------------------------------------------------
-          # Protect against very large prompts
-          # --------------------------------------------------
-
-          $maxLength = 120000
-
-          if ($checkov.Length -gt $maxLength) {
-              Write-Warning "Checkov report is large. Truncating."
-              $checkov = $checkov.Substring(0, $maxLength)
-          }
-
-          if ($plan.Length -gt $maxLength) {
-              Write-Warning "Terraform plan is large. Truncating."
-              $plan = $plan.Substring(0, $maxLength)
-          }
-
-          # --------------------------------------------------
-          # AI instruction
-          # --------------------------------------------------
-
-          $prompt = "You are an Azure DevOps and Terraform Security Reviewer.`n`n"
-
-          $prompt += "Review the Checkov report and Terraform plan.`n`n"
-
-          $prompt += "Your responsibilities:`n"
-          $prompt += "1. Identify Critical and High security findings.`n"
-          $prompt += "2. Explain why each Checkov finding occurred.`n"
-          $prompt += "3. Identify the Terraform root cause.`n"
-          $prompt += "4. Provide the exact Terraform fix.`n"
-          $prompt += "5. Explain whether the fix belongs inside the existing module or a separate module.`n"
-          $prompt += "6. Review Terraform plan changes for security risks.`n"
-          $prompt += "7. Review NSG, networking, public exposure, RBAC, identity, Key Vault, storage and encryption issues.`n"
-          $prompt += "8. Do not invent resources that are not present.`n"
-          $prompt += "9. Clearly separate actual findings from recommendations.`n"
-          $prompt += "10. Provide practical Azure DevOps engineer actions.`n`n"
-
-          $prompt += "Return the answer using these sections:`n"
-          $prompt += "## Executive Summary`n"
-          $prompt += "## Critical Findings`n"
-          $prompt += "## High Findings`n"
-          $prompt += "## Medium Findings`n"
-          $prompt += "## Terraform Root Cause`n"
-          $prompt += "## Recommended Terraform Fix`n"
-          $prompt += "## Module Placement`n"
-          $prompt += "## Terraform Plan Security Review`n"
-          $prompt += "## Validation Commands`n"
-          $prompt += "## Final Recommendation`n`n"
-
-          $prompt += "================ CHECKOV REPORT ================`n"
-          $prompt += $checkov
-          $prompt += "`n`n================ TERRAFORM PLAN ================`n"
-          $prompt += $plan
-
-          # --------------------------------------------------
-          # Create request JSON
-          # --------------------------------------------------
-
-          $request = @{
-              input = @(
-                  @{
-                      role = "user"
-                      content = $prompt
-                  }
-              )
-
-              extra_body = @{
-                  agent_reference = @{
-                      name = "$(foundryAgentName)"
-                      version = "$(foundryAgentVersion)"
-                      type = "agent_reference"
-                  }
-              }
-          }
-
-          $requestBody = $request | ConvertTo-Json -Depth 20
-
-          $requestFile = "$(Pipeline.Workspace)\foundry-request.json"
-          $responseFile = "$(Pipeline.Workspace)\foundry-response.json"
-
-          $requestBody | Set-Content `
-            -Path $requestFile `
-            -Encoding UTF8
-
-          Write-Host ""
-          Write-Host "Calling Foundry Agent..."
-          Write-Host "Agent: $(foundryAgentName)"
-          Write-Host "Version: $(foundryAgentVersion)"
-
-          # --------------------------------------------------
-          # Call Foundry
-          # --------------------------------------------------
-
-          az rest `
-            --method post `
-            --url "$(foundryEndpoint)/openai/v1/responses" `
-            --resource "https://ai.azure.com" `
-            --headers "Content-Type=application/json" `
-            --body "@$requestFile" `
-            --output json `
-            > "$responseFile"
-
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "Foundry AI request failed."
-              exit 1
-          }
-
-          if (!(Test-Path $responseFile)) {
-              Write-Error "Foundry response was not created."
-              exit 1
-          }
-
-          # --------------------------------------------------
-          # Display AI response
-          # --------------------------------------------------
-
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "AI SECURITY REVIEW"
-          Write-Host "========================================"
-
-          $response = Get-Content `
-            -Path $responseFile `
-            -Raw | ConvertFrom-Json
-
-          if ($null -ne $response.output_text) {
-
-              Write-Host $response.output_text
-
-          }
-          elseif ($null -ne $response.output) {
-
-              Write-Host (
-                $response.output |
-                ConvertTo-Json -Depth 20
-              )
-
-          }
-          else {
-
-              Write-Host (
-                $response |
-                ConvertTo-Json -Depth 20
-              )
-
-          }
-
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "AI Review Completed"
-          Write-Host "========================================"
+          $ErrorActionPreference = "Stop"
+          $pyPath = "$(Agent.TempDirectory)\terraform_ai_review.py"
+          $b64 = 'aW1wb3J0IGpzb24KaW1wb3J0IG9zCmZyb20gYXp1cmUuaWRlbnRpdHkgaW1wb3J0IERlZmF1bHRBenVyZUNyZWRlbnRpYWwKZnJvbSBhenVyZS5haS5wcm9qZWN0cyBpbXBvcnQgQUlQcm9qZWN0Q2xpZW50CgplbmRwb2ludCA9IG9zLmVudmlyb25bIkZPVU5EUllfUFJPSkVDVF9FTkRQT0lOVCJdCmFnZW50X25hbWUgPSBvcy5lbnZpcm9uWyJGT1VORFJZX0FHRU5UX05BTUUiXQphZ2VudF92ZXJzaW9uID0gb3MuZW52aXJvblsiRk9VTkRSWV9BR0VOVF9WRVJTSU9OIl0KY2hlY2tvdl9wYXRoID0gb3MuZW52aXJvblsiQ0hFQ0tPVl9SRVBPUlQiXQpwbGFuX3BhdGggPSBvcy5lbnZpcm9uWyJURVJSQUZPUk1fUExBTl9KU09OIl0KCndpdGggb3BlbihjaGVja292X3BhdGgsICJyIiwgZW5jb2Rpbmc9InV0Zi04LXNpZyIpIGFzIGY6CiAgICBjaGVja292X3JlcG9ydCA9IGpzb24ubG9hZChmKQp3aXRoIG9wZW4ocGxhbl9wYXRoLCAiciIsIGVuY29kaW5nPSJ1dGYtOC1zaWciKSBhcyBmOgogICAgdGVycmFmb3JtX3BsYW4gPSBqc29uLmxvYWQoZikKCnByb21wdCA9ICgKICAgICJZb3UgYXJlIFRlcnJhZm9ybS1TZWN1cml0eS1SZXZpZXdlciwgYW4gZXhwZXJ0IEF6dXJlIERldk9wcywgVGVycmFmb3JtIGFuZCBBenVyZSBzZWN1cml0eSByZXZpZXdlci5cblxuIgogICAgIlJldmlldyBCT1RIIHRoZSBDaGVja292IHNlY3VyaXR5IHJlcG9ydCBhbmQgVGVycmFmb3JtIFBsYW4gSlNPTiBiZWxvdy5cblxuIgogICAgIkNIRUNLT1YgUkVQT1JUOlxuIiArIGpzb24uZHVtcHMoY2hlY2tvdl9yZXBvcnQsIGluZGVudD0yKSArICJcblxuIgogICAgIlRFUlJBRk9STSBQTEFOIEpTT046XG4iICsganNvbi5kdW1wcyh0ZXJyYWZvcm1fcGxhbiwgaW5kZW50PTIpICsgIlxuXG4iCiAgICAiUHJvdmlkZTogZXhlY3V0aXZlIHN1bW1hcnk7IENyaXRpY2FsL0hpZ2gvTWVkaXVtL0xvdyBmaW5kaW5nczsgQ2hlY2tvdiBydWxlIElELCBzZXZlcml0eSwgcmVzb3VyY2UsIHJlYXNvbiwgcm9vdCBjYXVzZSwgc2VjdXJpdHkgaW1wYWN0LCByZW1lZGlhdGlvbiwgbW9kdWxlL3Jvb3QgbG9jYXRpb24sIHZhbGlkYXRpb24gY29tbWFuZCBhbmQgZmFsc2UtcG9zaXRpdmUgYXNzZXNzbWVudDsgVGVycmFmb3JtIENSRUFURS9NT0RJRlkvREVTVFJPWSByZXZpZXc7IHVuZXhwZWN0ZWQgZGVzdHJ1Y3Rpb247IHB1YmxpYyBleHBvc3VyZTsgbmV0d29yay9OU0cvUkJBQy9pZGVudGl0eS9LZXkgVmF1bHQvc3RvcmFnZS9lbmNyeXB0aW9uL2xvZ2dpbmcgcmlza3M7IGNoYW5nZXMgcmVxdWlyaW5nIG1hbnVhbCBhcHByb3ZhbC5cblxuIgogICAgIkRvIE5PVCBpbnZlbnQgcmVzb3VyY2VzLCBtb2R1bGVzLCBDaGVja292IElEcyBvciBjb25maWd1cmF0aW9uLiBEaXN0aW5ndWlzaCBjb25maXJtZWQgZmluZGluZ3MgZnJvbSBhc3N1bXB0aW9ucy5cblxuIgogICAgIkVuZCB3aXRoIGV4YWN0bHkgb25lIGRlY2lzaW9uOiBBUFBST1ZFLCBBUFBST1ZFIFdJVEggQ09ORElUSU9OUywgb3IgQkxPQ0ssIHdpdGgganVzdGlmaWNhdGlvbi4iCikKCmNyZWRlbnRpYWwgPSBEZWZhdWx0QXp1cmVDcmVkZW50aWFsKCkKcHJvamVjdF9jbGllbnQgPSBBSVByb2plY3RDbGllbnQoZW5kcG9pbnQ9ZW5kcG9pbnQsIGNyZWRlbnRpYWw9Y3JlZGVudGlhbCkKb3BlbmFpX2NsaWVudCA9IHByb2plY3RfY2xpZW50LmdldF9vcGVuYWlfY2xpZW50KCkKCnJlc3BvbnNlID0gb3BlbmFpX2NsaWVudC5yZXNwb25zZXMuY3JlYXRlKAogICAgaW5wdXQ9W3sicm9sZSI6ICJ1c2VyIiwgImNvbnRlbnQiOiBwcm9tcHR9XSwKICAgIGV4dHJhX2JvZHk9eyJhZ2VudF9yZWZlcmVuY2UiOiB7Im5hbWUiOiBhZ2VudF9uYW1lLCAidmVyc2lvbiI6IGFnZW50X3ZlcnNpb24sICJ0eXBlIjogImFnZW50X3JlZmVyZW5jZSJ9fQopCgpwcmludCgiPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09IikKcHJpbnQoIkFHRU5USUMgQUkgU0VDVVJJVFkgUkVWSUVXIFJFU1VMVCIpCnByaW50KCI9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0iKQpwcmludChyZXNwb25zZS5vdXRwdXRfdGV4dCkKcHJpbnQoIj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSIpCnByaW50KCJBSSBTRUNVUklUWSBSRVZJRVcgQ09NUExFVEVEIikKcHJpbnQoIj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSIpCg=='
+          [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64)) | Out-File -FilePath $pyPath -Encoding utf8
+          $env:FOUNDRY_PROJECT_ENDPOINT = "$(foundryEndpoint)"
+          $env:FOUNDRY_AGENT_NAME = "$(foundryAgentName)"
+          $env:FOUNDRY_AGENT_VERSION = "$(foundryAgentVersion)"
+          $env:CHECKOV_REPORT = "$(Pipeline.Workspace)\CheckovReport\checkov.json"
+          $env:TERRAFORM_PLAN_JSON = "$(Pipeline.Workspace)\TerraformPlan\tfplan.json"
+          Write-Host "Executing Terraform Security Reviewer..."
+          python $pyPath
+          if ($LASTEXITCODE -ne 0) { Write-Error "Agentic AI Security Review failed."; exit $LASTEXITCODE }
